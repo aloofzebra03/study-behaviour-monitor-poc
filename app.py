@@ -1,25 +1,30 @@
-"""Run with: python -m streamlit run app.py"""
-
+"""USB-only phone-facing monitor. Run: python -m streamlit run app.py."""
 import json
 import logging
 import time
 from collections import deque
+from dataclasses import replace
 from datetime import datetime, timezone
 
 import streamlit as st
 
-from study_monitor.rules import OFF_TASK, STUDYING, UNKNOWN, RuleEngine, Settings
+from study_monitor.rules import FACING, LOOKING_AWAY, UNKNOWN, RuleEngine
 from study_monitor.usb import UsbReader, find_adb, list_devices
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-LOG = logging.getLogger("study_dashboard")
-st.set_page_config(page_title="Study position monitor", layout="wide")
-st.title("Study position monitor · USB POC")
-st.caption("ML Kit runs on your Android phone. Only numeric measurements reach this laptop.")
-st.warning("This estimates visible head position, not attention or learning. Looking down can mean reading, writing or using a phone.")
+LOG = logging.getLogger("phone_dashboard")
+st.set_page_config(page_title="Phone screen monitor", layout="wide")
+st.title("Is the student facing the phone?")
+st.caption("ML Kit runs on your phone. Only numeric measurements reach this laptop over USB.")
+st.info("This estimates head direction, not exact eye gaze or attention. Keep the camera near eye level and the phone app open.")
 
-if "engine" not in st.session_state:
+# Upgrade browser sessions that still have the older two-position engine.
+if "engine" not in st.session_state or getattr(st.session_state.engine, "version", None) != 2:
+    old_reader = st.session_state.get("reader")
+    if old_reader:
+        old_reader.stop()
     st.session_state.engine = RuleEngine()
+    st.session_state.saved_profile = st.session_state.engine.export_profile()
     st.session_state.reader = None
     st.session_state.devices = []
     st.session_state.history = deque(maxlen=1500)
@@ -28,10 +33,8 @@ if "engine" not in st.session_state:
     st.session_state.latest = None
     st.session_state.latest_capture = None
     st.session_state.last_status = UNKNOWN
-    st.session_state.last_reminder = float("-inf")
-    st.session_state.reminder_until = 0
-    st.session_state.source = None
-    st.session_state.paused_before = False
+    st.session_state.mode = "Test"
+    st.session_state.notice = ""
 
 
 def record_event(text):
@@ -39,70 +42,113 @@ def record_event(text):
     LOG.info(text)
 
 
+def seed_tuning_widgets():
+    for name, value in st.session_state.engine.export_profile()["settings"].items():
+        st.session_state[f"tune_{name}"] = float(value)
+
+
+def switch_mode():
+    st.session_state.engine.load_profile(st.session_state.saved_profile)
+    seed_tuning_widgets()
+    record_event(f"Mode changed to {st.session_state.mode}; decision timers reset.")
+
+
+def save_and_test():
+    engine = st.session_state.engine
+    engine.cancel_calibration()
+    st.session_state.saved_profile = engine.export_profile()
+    engine.load_profile(st.session_state.saved_profile)
+    st.session_state.mode = "Test"
+    st.session_state.notice = "Settings saved for this browser session. Download them to reuse them later."
+    record_event("Saved phone-facing settings and switched to Test.")
+
+
+def load_uploaded_profile():
+    uploaded = st.session_state.get("profile_upload")
+    if uploaded is None:
+        return
+    try:
+        if uploaded.size > 16000:
+            raise ValueError("Settings file is too large.")
+        st.session_state.engine.load_profile(json.loads(uploaded.getvalue()))
+        st.session_state.saved_profile = st.session_state.engine.export_profile()
+        seed_tuning_widgets()
+        st.session_state.notice = "Settings loaded. Switch to Test to use them."
+    except (ValueError, TypeError, KeyError) as exc:
+        st.session_state.notice = f"Could not load settings: {exc}"
+
+
+mode = st.radio("Mode", ["Test", "Tune / calibrate"], horizontal=True, key="mode", on_change=switch_mode)
+tuning = mode == "Tune / calibrate"
+if st.session_state.notice:
+    st.caption(st.session_state.notice)
+
 with st.sidebar:
     st.header("USB connection")
-    adb_path = st.text_input("ADB executable (blank auto-detects)", placeholder=r"D:\Android\platform-tools\adb.exe")
+    with st.expander("Advanced USB setup"):
+        adb_path = st.text_input("ADB executable (blank auto-detects)", placeholder=r"D:\Android\platform-tools\adb.exe")
     if st.button("Refresh devices"):
         try:
             st.session_state.devices = list_devices(find_adb(adb_path))
             if not st.session_state.devices:
-                st.info("No Android phone found. Use a data cable, enable USB debugging, then approve the prompt on the unlocked phone.")
+                st.warning("No phone found. Check USB debugging, the data cable and the authorization prompt on the unlocked phone.")
         except Exception as exc:
             st.error(str(exc))
     devices = st.session_state.devices
-    device = st.selectbox("Phone", devices, format_func=lambda d: f"{d['serial']} — {d['state']} {d['description']}", index=0 if devices else None)
+    device = st.selectbox("Phone", devices, format_func=lambda d: f"{d['serial']} — {d['state']}", index=0 if devices else None)
     if device and device["state"] != "device":
-        st.warning("Unlock the phone and approve USB debugging. If offline, reconnect the cable.")
-    if st.button("Connect dashboard", disabled=not device or device["state"] != "device"):
+        st.warning("Unlock the phone and approve USB debugging. If offline, reconnect it.")
+    if st.button("Connect", disabled=not device or device["state"] != "device"):
         try:
             if st.session_state.reader:
                 st.session_state.reader.stop()
-            selected_adb = find_adb(adb_path)
-            # A calibration is specific to this device and camera position.
-            if st.session_state.source != device["serial"]:
-                st.session_state.engine.clear_calibration()
-            st.session_state.source = device["serial"]
-            st.session_state.engine.reset("Connected; waiting for fresh data.")
+            st.session_state.engine.reset("Connected; waiting for fresh phone measurements.")
             st.session_state.latest = None
             st.session_state.latest_capture = None
-            st.session_state.reader = UsbReader(selected_adb, device["serial"])
+            st.session_state.reader = UsbReader(find_adb(adb_path), device["serial"])
             st.session_state.reader.start()
-            record_event("USB connection requested. Open the phone app and press Start.")
+            record_event("USB connected. Open the phone app and press Start.")
         except Exception as exc:
             st.error(str(exc))
-    if st.button("Disconnect dashboard", disabled=st.session_state.reader is None):
+    if st.button("Disconnect", disabled=st.session_state.reader is None):
         st.session_state.reader.stop()
         st.session_state.reader = None
         st.session_state.latest_capture = None
         st.session_state.engine.reset("Dashboard disconnected.")
-        record_event("Dashboard disconnected. Stop the camera using the phone's Stop button.")
-    st.caption("Disconnecting this dashboard does not control the phone camera. Use Stop on the phone.")
-    paused = st.toggle("Pause assessment", value=False)
-    if paused != st.session_state.paused_before:
-        st.session_state.engine.cancel_calibration()
-        st.session_state.engine.reset("Assessment paused." if paused else "Assessment resumed; timers reset.")
-        st.session_state.paused_before = paused
-    st.caption("Pause affects rules only; phone capture continues until you stop it on the phone.")
-    st.header("Rule settings")
-    yaw_limit = st.slider("Allowed horizontal angle ± degrees", 1, 90, 20)
-    pitch_limit = st.slider("Allowed vertical angle ± degrees", 1, 90, 15)
-    away = st.slider("Outside-position delay (seconds)", 1, 30, 5)
-    recovery = st.slider("Recovery delay (seconds)", 0.2, 10.0, 2.0, 0.2)
-    alpha = st.slider("Smoothing: higher responds faster", 0.05, 1.0, 0.3, 0.05)
-    engine = st.session_state.engine
-    engine.update_settings(Settings(yaw_limit, pitch_limit, away, recovery, alpha))
+        record_event("Dashboard disconnected. Stop the camera on the phone.")
+    st.caption("Disconnect stops only the USB reader. Start / Stop on the phone controls its camera.")
 
-st.subheader("1. Calibrate normal study positions")
-st.caption("Prop the phone so your face remains visible when reading the screen and writing. Hold each normal position steadily for five seconds. Recalibrate after moving the camera.")
-columns = st.columns(4)
-if columns[0].button("Calibrate screen", disabled=paused):
-    engine.begin_calibration("screen")
-if columns[1].button("Calibrate notebook", disabled=paused):
-    engine.begin_calibration("notebook")
-if columns[2].button("Cancel calibration"):
-    engine.cancel_calibration()
-if columns[3].button("Clear calibration"):
-    engine.clear_calibration()
+engine = st.session_state.engine
+if tuning:
+    st.subheader("Tune settings, then save and test")
+    st.caption("No notebook position. A personal front-facing reference is optional; default angles work without calibration.")
+    cols = st.columns(2)
+    yaw = cols[0].slider("Allowed sideways turn ± degrees", 1.0, 90.0, float(engine.settings.yaw_tolerance), 1.0, key="tune_yaw_tolerance")
+    pitch = cols[1].slider("Allowed up/down tilt ± degrees", 1.0, 90.0, float(engine.settings.pitch_tolerance), 1.0, key="tune_pitch_tolerance")
+    away = cols[0].slider("Looking-away delay (seconds)", 1.0, 30.0, float(engine.settings.away_seconds), 0.5, key="tune_away_seconds")
+    recovery = cols[1].slider("Facing-screen delay (seconds)", 0.2, 10.0, float(engine.settings.recovery_seconds), 0.2, key="tune_recovery_seconds")
+    alpha = cols[0].slider("Smoothing: higher responds faster", 0.05, 1.0, float(engine.settings.smoothing_alpha), 0.05, key="tune_smoothing_alpha")
+    engine.update_settings(replace(engine.settings, yaw_tolerance=yaw, pitch_tolerance=pitch,
+                                   away_seconds=away, recovery_seconds=recovery, smoothing_alpha=alpha))
+    with st.expander("Optional: capture a front-facing reference"):
+        st.caption("Look directly at the phone and capture for five seconds. Test mode does not require this.")
+        buttons = st.columns(3)
+        if buttons[0].button("Capture front-facing position"):
+            engine.begin_calibration()
+        if buttons[1].button("Cancel capture"):
+            engine.cancel_calibration()
+        if buttons[2].button("Use default front-facing angles"):
+            engine.use_default_reference()
+        st.caption(engine.calibration_message)
+    st.button("Save settings and test", type="primary", on_click=save_and_test)
+    with st.expander("Reuse settings on another local dashboard"):
+        st.file_uploader("Load phone-screen settings JSON", type=["json"], key="profile_upload", on_change=load_uploaded_profile)
+        st.download_button("Download current settings", json.dumps(engine.export_profile(), indent=2),
+                           "phone_screen_settings.json", "application/json", on_click="ignore")
+        st.caption("Captured reference angles are person- and camera-specific. Reused thresholds still need checking on another setup.")
+else:
+    st.caption(f"Saved settings: sideways ±{engine.settings.yaw_tolerance:g}°, up/down ±{engine.settings.pitch_tolerance:g}°, "
+               f"away delay {engine.settings.away_seconds:g}s, facing delay {engine.settings.recovery_seconds:g}s. No calibration required.")
 
 
 @st.fragment(run_every=0.25)
@@ -114,82 +160,57 @@ def live_dashboard():
         batch, gap = reader.drain()
         connection = reader.snapshot()
         if gap:
-            engine.reset("Dashboard fell behind; old data discarded and timers reset.")
+            engine.reset("Dashboard fell behind; old samples discarded and timers reset.")
         for received in batch:
-            m = received.measurement
-            st.session_state.latest = m.as_dict()
+            measurement = received.measurement
+            st.session_state.latest = measurement.as_dict()
             st.session_state.latest_capture = received.capture_time
-            if not paused:
-                previous_run = engine.last_identity[0] if engine.last_identity else None
-                if previous_run and previous_run != m.run_id:
-                    record_event("Phone monitoring run changed; decision timers reset. Recalibrate if the camera moved.")
-                engine.process(m)
-            snapshot = engine.snapshot()
-            st.session_state.history.append({"host_received_utc": datetime.now(timezone.utc).isoformat(),
-                                             **m.as_dict(), **snapshot})
+            engine.process(measurement)
+            st.session_state.history.append({"time_utc": datetime.now(timezone.utc).isoformat(),
+                                             **measurement.as_dict(), **engine.snapshot()})
         if not connection["alive"]:
-            engine.reset(connection["error"] or "USB reader stopped. Reconnect the dashboard.")
+            engine.reset(connection["error"] or "USB reader stopped; reconnect the dashboard.")
         elif st.session_state.latest_capture is None or now - st.session_state.latest_capture > 1:
-            engine.reset("No fresh measurements within one second. Start the phone app or check the USB connection.")
+            engine.reset("No fresh data. Keep the phone app open, grant camera access and press Start.")
         st.caption(f"USB: {connection['status']} · accepted {connection['accepted']} · discarded {connection['discarded']}")
         if connection["error"]:
             st.error(connection["error"])
     else:
-        engine.reset("Connect an authorized USB phone to begin.")
-    if paused:
-        engine.reset("Assessment paused; measurements are not being assessed.")
+        engine.reset("Connect a USB phone to begin.")
     if engine.status != st.session_state.last_status:
         record_event(f"{engine.status}: {engine.reason}")
-        if engine.status == OFF_TASK and now - st.session_state.last_reminder >= 30:
-            st.session_state.last_reminder = now
-            st.session_state.reminder_until = now + 8
         st.session_state.last_status = engine.status
-    if engine.status == OFF_TASK and now < st.session_state.reminder_until:
-        st.info("Have you moved away from your work? If you're ready, return to a comfortable study position.")
-    st.subheader("2. Live assessment")
-    {UNKNOWN: st.warning, STUDYING: st.success, OFF_TASK: st.info}[engine.status](engine.status)
+    st.subheader("Live result")
+    {UNKNOWN: st.warning, FACING: st.success, LOOKING_AWAY: st.info}[engine.status](engine.status)
     st.write(engine.reason)
-    st.caption(engine.calibration_message)
+    if engine.calibration is not None:
+        st.caption(engine.calibration_message)
     latest = st.session_state.latest or {}
-    metrics = st.columns(4)
-    for col, name, label in zip(metrics, ("face_count", "yaw", "pitch", "roll"), ("Faces", "Yaw / sideways", "Pitch / up-down", "Roll / tilt")):
-        value = latest.get(name)
-        col.metric(label, "—" if value is None else f"{value:g}" + ("°" if name != "face_count" else ""))
-    if st.session_state.latest_capture is not None:
-        st.caption(f"Displayed sample age: {max(0, now - st.session_state.latest_capture):.1f}s. Stale values are diagnostic only.")
-    st.write("Saved normal positions", engine.profiles or "Not calibrated")
-    with st.expander("Measurements and rule details"):
-        st.json({"latest_raw_measurement": latest, "decision": engine.snapshot()})
-        if st.session_state.history:
-            chart = [{"sample": i, "yaw": r.get("yaw"), "pitch": r.get("pitch")}
-                     for i, r in enumerate(list(st.session_state.history)[-150:])]
-            st.line_chart(chart, x="sample", y=["yaw", "pitch"])
-    st.subheader("3. Mark what was actually happening")
-    st.caption("These are your manual labels, not model conclusions. They label this moment, not an entire interval.")
-    label_columns = st.columns(3)
-    for column, label in zip(label_columns, ("Normal studying", "Off-task", "Cannot assess")):
-        if column.button(label):
-            st.session_state.labels.append({"time_utc": datetime.now(timezone.utc).isoformat(),
-                                            "label": label, "measurement": latest, "decision": engine.snapshot()})
-            st.toast(f"Marked: {label}")
-    with st.expander("Event timeline and manual labels"):
-        st.write(list(st.session_state.events)[::-1])
-        st.write(list(st.session_state.labels)[::-1])
-    st.subheader("4. Optional export")
-    st.caption("Downloads may include personal calibration and numeric face measurements. Nothing is saved to a file automatically.")
-    if st.button("Prepare export snapshot"):
-        st.session_state.export_settings = json.dumps({"schema_version": 1, "decision": engine.snapshot(),
-            "note": "Calibration is person- and camera-specific."}, indent=2)
-        st.session_state.export_session = json.dumps({"schema_version": 1,
-            "settings_and_calibration": engine.snapshot(), "measurements": list(st.session_state.history),
-            "labels": list(st.session_state.labels), "events": list(st.session_state.events)}, indent=2)
-    if "export_settings" in st.session_state:
-        st.caption("Downloads contain the snapshot from the last time you pressed Prepare, not a continuously updated recording.")
-        export_columns = st.columns(2)
-        export_columns[0].download_button("Download settings and calibration", st.session_state.export_settings,
-            "calibration_settings.json", "application/json", on_click="ignore")
-        export_columns[1].download_button("Download recent measurements and labels", st.session_state.export_session,
-            "study_session.json", "application/json", on_click="ignore")
+    with st.expander("Live model measurements and rule details", expanded=tuning):
+        for col, name, label in zip(st.columns(3), ("face_count", "yaw", "pitch"), ("Faces", "Sideways / yaw", "Up-down / pitch")):
+            value = latest.get(name)
+            col.metric(label, "—" if value is None else f"{value:g}" + ("°" if name != "face_count" else ""))
+        if st.session_state.latest_capture is not None:
+            st.caption(f"Sample age: {max(0, now - st.session_state.latest_capture):.1f}s. Old values are diagnostic only.")
+        st.json({"measurement": latest, "decision": engine.snapshot()})
+    if tuning:
+        with st.expander("Optional: mark observations and export recent data"):
+            st.caption("Labels refer to this moment. They are your observations, not model-generated ground truth.")
+            for col, label in zip(st.columns(3), ("Facing screen", "Looking away", "Cannot assess")):
+                if col.button(label):
+                    st.session_state.labels.append({"time_utc": datetime.now(timezone.utc).isoformat(),
+                                                    "label": label, "measurement": latest, "decision": engine.snapshot()})
+                    st.toast(f"Marked: {label}")
+            if st.button("Prepare recent data export"):
+                st.session_state.export_session = json.dumps({"schema_version": 2, "profile": engine.export_profile(),
+                    "measurements": list(st.session_state.history), "labels": list(st.session_state.labels),
+                    "events": list(st.session_state.events)}, indent=2)
+            if "export_session" in st.session_state:
+                st.download_button("Download prepared data", st.session_state.export_session,
+                                   "phone_screen_session.json", "application/json", on_click="ignore")
+            st.caption("Exports contain numeric face measurements and possibly personal reference angles. No video is saved.")
+            st.write(list(st.session_state.events)[-10:])
 
 
 live_dashboard()
+st.caption("USB testing must run on the laptop connected to the phone. Streamlit Cloud cannot access that laptop's USB devices.")

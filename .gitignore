@@ -8,6 +8,7 @@ exports/
 *.csv
 calibration*.json
 study_session*.json
+phone_screen*.json
 *.log
 *.iml
 local.properties

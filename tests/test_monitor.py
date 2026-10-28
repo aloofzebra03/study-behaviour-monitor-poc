@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from study_monitor.rules import OFF_TASK, STUDYING, UNKNOWN, RuleEngine, Settings
+from study_monitor.rules import LOOKING_AWAY, FACING, UNKNOWN, RuleEngine, Settings
 from study_monitor.telemetry import parse_measurement
 from study_monitor.usb import FreshnessGate, Received, UsbReader, find_adb, list_devices
 
@@ -46,29 +46,28 @@ class TelemetryTests(unittest.TestCase):
 class RulesTests(unittest.TestCase):
     def setUp(self):
         self.engine = RuleEngine()
-        self.engine.profiles = {"screen": {"yaw": 0, "pitch": 0}, "notebook": {"yaw": 0, "pitch": -30}}
         self.engine.update_settings(Settings(smoothing_alpha=1))
 
     def feed(self, start, end, **kwargs):
         for tick in range(round(start * 5), round(end * 5) + 1):
             self.engine.process(sample(tick / 5, **kwargs))
 
-    def test_screen_and_notebook_are_accepted(self):
+    def test_default_reference_and_looking_down(self):
         self.feed(1, 3.2)
-        self.assertEqual(self.engine.status, STUDYING)
-        self.feed(3.4, 6, pitch=-30)
-        self.assertEqual(self.engine.status, STUDYING)
-        self.assertEqual(self.engine.matched_position, "notebook")
+        self.assertEqual(self.engine.status, FACING)
+        self.feed(3.4, 8.6, pitch=-30)
+        self.assertEqual(self.engine.status, LOOKING_AWAY)
+        self.assertFalse(self.engine.within_screen_range)
 
     def test_brief_glance_then_sustained_turn_then_recovery(self):
         self.feed(1, 3.2)
         self.feed(3.4, 5, yaw=40)
-        self.assertEqual(self.engine.status, STUDYING)
+        self.assertEqual(self.engine.status, FACING)
         self.feed(5.2, 6)
         self.feed(6.2, 11.4, yaw=40)
-        self.assertEqual(self.engine.status, OFF_TASK)
+        self.assertEqual(self.engine.status, LOOKING_AWAY)
         self.feed(11.6, 13.8)
-        self.assertEqual(self.engine.status, STUDYING)
+        self.assertEqual(self.engine.status, FACING)
 
     def test_unknown_resets_candidates(self):
         for count in (0, 2):
@@ -77,9 +76,8 @@ class RulesTests(unittest.TestCase):
             self.assertEqual(self.engine.status, UNKNOWN)
             self.assertIsNone(self.engine.candidate_since)
             self.feed(6.2, 7, yaw=45)
-            self.assertNotEqual(self.engine.status, OFF_TASK)
+            self.assertNotEqual(self.engine.status, LOOKING_AWAY)
             self.engine = RuleEngine()
-            self.engine.profiles = {"screen": {"yaw": 0, "pitch": 0}, "notebook": {"yaw": 0, "pitch": -30}}
             self.engine.update_settings(Settings(smoothing_alpha=1))
 
     def test_gap_and_restart_cannot_complete_old_timer(self):
@@ -107,37 +105,63 @@ class RulesTests(unittest.TestCase):
         self.engine.reset("Paused")
         self.assertIsNone(self.engine.smoothed)
 
-    def test_calibration_uses_five_seconds_and_median(self):
-        self.engine.clear_calibration()
-        self.engine.begin_calibration("screen")
+    def test_optional_calibration_uses_five_seconds_and_median(self):
+        self.engine.begin_calibration()
         self.feed(1, 6, yaw=4, pitch=2)
-        self.assertEqual(self.engine.profiles["screen"], {"yaw": 4, "pitch": 2})
+        self.assertEqual(self.engine.settings.center_yaw, 4)
+        self.assertEqual(self.engine.settings.center_pitch, 2)
+        self.assertEqual(self.engine.reference_source, "captured")
         self.assertEqual(self.engine.status, UNKNOWN)
-        self.engine.begin_calibration("notebook")
-        self.feed(6.2, 11.4, pitch=-30)
-        self.assertIn("notebook", self.engine.profiles)
+        self.feed(6.2, 8.4, yaw=4, pitch=2)
+        self.assertEqual(self.engine.status, FACING)
 
     def test_interrupted_calibration_does_not_save_partial_data(self):
-        self.engine.clear_calibration()
-        self.engine.begin_calibration("screen")
+        self.engine.use_default_reference()
+        self.engine.begin_calibration()
         self.feed(1, 4)
         self.engine.process(sample(4.2, count=0))
         self.feed(4.4, 7)
-        self.assertNotIn("screen", self.engine.profiles)
+        self.assertEqual(self.engine.settings.center_yaw, 0)
         self.assertIsNotNone(self.engine.calibration)
 
     def test_unstable_calibration_retries(self):
-        self.engine.clear_calibration()
-        self.engine.begin_calibration("screen")
+        self.engine.use_default_reference()
+        self.engine.begin_calibration()
         self.feed(1, 3.4, yaw=-15)
         self.feed(3.6, 6, yaw=15)
-        self.assertNotIn("screen", self.engine.profiles)
+        self.assertEqual(self.engine.settings.center_yaw, 0)
         self.assertIn("movement", self.engine.calibration_message)
 
-    def test_calibration_required(self):
-        self.engine.clear_calibration()
+    def test_calibration_not_required(self):
         self.feed(1, 10)
-        self.assertEqual(self.engine.status, UNKNOWN)
+        self.assertEqual(self.engine.status, FACING)
+        self.assertTrue(self.engine.snapshot()["is_facing_screen"])
+
+    def test_saved_profile_round_trip_and_reference_reset(self):
+        self.engine.begin_calibration()
+        self.feed(1, 6, yaw=15, pitch=8)
+        profile = json.loads(json.dumps(self.engine.export_profile()))
+        other = RuleEngine()
+        other.load_profile(profile)
+        self.assertEqual(other.settings.center_yaw, 15)
+        self.assertEqual(other.reference_source, "captured")
+        other.use_default_reference()
+        self.assertEqual(other.settings.center_yaw, 0)
+        self.assertEqual(other.reference_source, "default")
+
+    def test_invalid_profiles_do_not_change_settings(self):
+        original = self.engine.export_profile()
+        for bad in (
+            {"schema_version": 1},
+            {**original, "reference_source": "other"},
+            {**original, "settings": {"yaw_tolerance": 20}},
+            {**original, "settings": {**original["settings"], "yaw_tolerance": float("nan")}},
+            {**original, "settings": {**original["settings"], "center_pitch": True}},
+        ):
+            with self.subTest(bad=bad), self.assertRaises((ValueError, TypeError)):
+                self.engine.load_profile(bad)
+            self.assertEqual(self.engine.export_profile(), original)
+
 
 
 class UsbTests(unittest.TestCase):

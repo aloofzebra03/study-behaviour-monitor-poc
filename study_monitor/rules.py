@@ -1,13 +1,13 @@
-"""Pure rules: head position is an observable proxy, never proof of studying."""
+"""Phone-facing head-position rules, not eye-gaze or attention detection."""
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from statistics import median
 
-from .telemetry import Measurement
+from .telemetry import Measurement, number
 
 UNKNOWN = "Unknown"
-STUDYING = "Likely studying"
-OFF_TASK = "Possibly off-task"
+FACING = "Facing phone screen"
+LOOKING_AWAY = "Looking away"
 
 
 def angle_delta(a, b):
@@ -21,22 +21,25 @@ class Settings:
     away_seconds: float = 5
     recovery_seconds: float = 2
     smoothing_alpha: float = 0.3
+    center_yaw: float = 0
+    center_pitch: float = 0
 
     def __post_init__(self):
         for name, low, high in (("yaw_tolerance", 1, 90), ("pitch_tolerance", 1, 90),
                                 ("away_seconds", 1, 30), ("recovery_seconds", 0.2, 10),
-                                ("smoothing_alpha", 0.05, 1)):
-            value = getattr(self, name)
-            if not low <= value <= high:
-                raise ValueError(f"{name} must be between {low} and {high}")
+                                ("smoothing_alpha", 0.05, 1),
+                                ("center_yaw", -180, 180), ("center_pitch", -180, 180)):
+            number(getattr(self, name), name, low, high)
 
 
 class RuleEngine:
+    version = 2
+
     def __init__(self):
         self.settings = Settings()
-        self.profiles = {}
         self.calibration = None
-        self.calibration_message = "Calibrate both screen and notebook positions."
+        self.reference_source = "default"
+        self.calibration_message = "Using default front-facing angles. Calibration is optional."
         self.last_identity = None
         self.last_capture_ms = None
         self.reset("Waiting for fresh phone measurements.")
@@ -48,20 +51,18 @@ class RuleEngine:
         self.candidate_since = None
         self.elapsed = 0.0
         self.smoothed = None
-        self.matched_position = None
+        self.within_screen_range = None
         if self.calibration is not None:
-            self.calibration["samples"].clear()
+            self.calibration.clear()
 
     def update_settings(self, settings):
         if settings != self.settings:
             self.settings = settings
             self.reset("Settings changed; decision timers reset.")
 
-    def begin_calibration(self, position):
-        if position not in ("screen", "notebook"):
-            raise ValueError("Unknown calibration position")
-        self.calibration = {"position": position, "samples": []}
-        self.reset(f"Calibrating {position}; hold the position for five seconds.")
+    def begin_calibration(self):
+        self.calibration = []
+        self.reset("Look directly at the phone and hold steadily for five seconds.")
         self.calibration_message = self.reason
 
     def cancel_calibration(self):
@@ -69,11 +70,31 @@ class RuleEngine:
         self.reset("Calibration cancelled.")
         self.calibration_message = self.reason
 
-    def clear_calibration(self):
-        self.profiles.clear()
+    def use_default_reference(self):
         self.calibration = None
-        self.reset("Calibration cleared. Calibrate both positions.")
+        self.reference_source = "default"
+        self.settings = replace(self.settings, center_yaw=0, center_pitch=0)
+        self.reset("Using default front-facing angles; no calibration required.")
         self.calibration_message = self.reason
+
+    def export_profile(self):
+        return {"schema_version": 2, "settings": asdict(self.settings), "reference_source": self.reference_source}
+
+    def load_profile(self, profile):
+        if not isinstance(profile, dict) or type(profile.get("schema_version")) is not int or profile["schema_version"] != 2:
+            raise ValueError("Expected a version 2 phone-screen settings file; older notebook profiles are not supported.")
+        values = profile.get("settings")
+        if not isinstance(values, dict) or set(values) != set(asdict(Settings())):
+            raise ValueError("Settings file has missing or unsupported fields.")
+        source = profile.get("reference_source")
+        if source not in ("default", "captured"):
+            raise ValueError("Unknown reference_source")
+        settings = Settings(**values)
+        self.settings = settings
+        self.reference_source = source
+        self.calibration = None
+        self.reset("Testing saved phone-screen settings; decision timers reset.")
+        self.calibration_message = "Using default front-facing angles." if source == "default" else "Using an optionally captured front-facing position."
 
     def process(self, measurement: Measurement):
         identity = (measurement.run_id, measurement.sequence)
@@ -96,10 +117,10 @@ class RuleEngine:
             return True
         now = measurement.capture_ms / 1000
         if self.calibration is not None:
-            samples = self.calibration["samples"]
+            samples = self.calibration
             samples.append((now, measurement.yaw, measurement.pitch))
             duration = now - samples[0][0]
-            self.reason = f"Calibrating {self.calibration['position']}: {min(duration, 5):.1f}/5 seconds."
+            self.reason = f"Capturing front-facing position: {min(duration, 5):.1f}/5 seconds."
             self.calibration_message = self.reason
             if duration >= 5 and len(samples) >= 15:
                 yaw = median(s[1] for s in samples)
@@ -111,14 +132,11 @@ class RuleEngine:
                     self.calibration_message = "Too much movement. Hold your normal position steadily; retrying."
                     self.reason = self.calibration_message
                 else:
-                    position = self.calibration["position"]
-                    self.profiles[position] = {"yaw": yaw, "pitch": pitch}
+                    self.settings = replace(self.settings, center_yaw=yaw, center_pitch=pitch)
+                    self.reference_source = "captured"
                     self.calibration = None
-                    self.reset(f"Saved {position} calibration.")
+                    self.reset("Front-facing position captured. Save settings to use it in Test mode.")
                     self.calibration_message = self.reason
-            return True
-        if len(self.profiles) != 2:
-            self.reset("Calibrate both screen and notebook positions before assessment.")
             return True
         if self.smoothed is None:
             self.smoothed = (measurement.yaw, measurement.pitch)
@@ -127,24 +145,23 @@ class RuleEngine:
             self.smoothed = tuple(old + alpha * angle_delta(new, old)
                                   for old, new in zip(self.smoothed, (measurement.yaw, measurement.pitch)))
         yaw, pitch = self.smoothed
-        self.matched_position = next((name for name, p in self.profiles.items()
-                                     if abs(angle_delta(yaw, p["yaw"])) <= self.settings.yaw_tolerance
-                                     and abs(angle_delta(pitch, p["pitch"])) <= self.settings.pitch_tolerance), None)
-        candidate = STUDYING if self.matched_position else OFF_TASK
+        self.within_screen_range = (abs(angle_delta(yaw, self.settings.center_yaw)) <= self.settings.yaw_tolerance
+                                    and abs(angle_delta(pitch, self.settings.center_pitch)) <= self.settings.pitch_tolerance)
+        candidate = FACING if self.within_screen_range else LOOKING_AWAY
         if candidate != self.candidate:
             self.candidate = candidate
             self.candidate_since = now
         self.elapsed = now - self.candidate_since
-        threshold = self.settings.recovery_seconds if candidate == STUDYING else self.settings.away_seconds
+        threshold = self.settings.recovery_seconds if candidate == FACING else self.settings.away_seconds
         if self.elapsed >= threshold:
             self.status = candidate
-        location = f"Inside {self.matched_position} range" if self.matched_position else "Outside both calibrated ranges"
+        location = "Head facing the phone" if self.within_screen_range else "Head turned away from the phone"
         self.reason = f"{location} for {self.elapsed:.1f}s (threshold {threshold:g}s)."
         return True
 
     def snapshot(self):
-        return {"status": self.status, "is_studying": {STUDYING: True, OFF_TASK: False}.get(self.status),
+        return {"status": self.status, "is_facing_screen": {FACING: True, LOOKING_AWAY: False}.get(self.status),
                 "reason": self.reason, "elapsed_seconds": round(self.elapsed, 3),
-                "candidate": self.candidate, "matched_position": self.matched_position,
-                "smoothed_angles": self.smoothed, "calibration": dict(self.profiles),
+                "candidate": self.candidate, "within_screen_range": self.within_screen_range,
+                "smoothed_angles": self.smoothed, "reference_source": self.reference_source,
                 "settings": asdict(self.settings)}

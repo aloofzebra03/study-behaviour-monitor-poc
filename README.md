@@ -1,6 +1,6 @@
 # Study Behaviour Monitor — USB POC
 
-A small Android app runs Google ML Kit Face Detection on the phone. A local Streamlit dashboard receives numeric measurements over USB and lets you tune simple head-position rules.
+A small Android app runs Google ML Kit Face Detection on the phone. A local Streamlit dashboard receives numeric measurements over USB and estimates whether the student's head is facing the phone screen or turned away.
 
 ```text
 Phone camera → ML Kit → numeric JSON → USB / adb logcat → Streamlit rules and dashboard
@@ -8,17 +8,17 @@ Phone camera → ML Kit → numeric JSON → USB / adb logcat → Streamlit rule
 
 No FastAPI server, internet connection, account or API key is needed while using the POC. Initial dependency downloads require internet. Camera frames stay on the phone. The phone displays its preview; the laptop displays measurements, not video.
 
-This estimates visible head position, **not attention or learning**. Reading a notebook and looking at a phone may look identical. It does not detect physical phones, emotions, sleep or homework progress. Use it with consent, not as a disciplinary score.
+This estimates head direction, **not exact eye gaze, attention or learning**. Someone can face forward while moving their eyes elsewhere. It does not detect physical phones, emotions, sleep or homework progress. Use it with consent. There is no notebook position and no mandatory calibration.
 
 ## What is in the project?
 
 | File or folder | Purpose |
 | --- | --- |
 | `android/` | Independent Kotlin app: CameraX preview, bundled ML Kit detector, numeric telemetry |
-| `app.py` | Streamlit connection controls, calibration, settings, live results and exports |
+| `app.py` | Simple Test mode plus Tune / calibrate mode, saved settings and live results |
 | `study_monitor/telemetry.py` | Validates the JSON sent by Android |
 | `study_monitor/usb.py` | Reads only our telemetry tag through ADB and rejects old/invalid data |
-| `study_monitor/rules.py` | Calibration, smoothing, time-based decisions; independent of Streamlit |
+| `study_monitor/rules.py` | Phone-facing thresholds, optional reference capture and time-based decisions |
 | `tests/` | Checks that need neither a phone nor Android Studio |
 
 The existing `base.apk` is not used or modified. Install the app built from this project.
@@ -74,34 +74,47 @@ Open `http://localhost:8501`. Enter the full path to `adb.exe` if it is not on P
 
 The Android app writes only the dedicated `StudyMonitor` numeric log tag. The reader does not clear your phone logs or stop the shared ADB server. No root access is required.
 
-## 4. Calibrate and tune
+## 4. Use Test mode
 
-Prop the phone on a stable stand. Keep the face at least roughly 100×100 pixels in the camera input, including while writing. Normal eye/head movement is not evidence of misbehaviour.
+1. Keep the phone's front camera near eye level, with the face clearly visible.
+2. Leave the phone app open and press **Start**. Approve camera access if asked.
+3. In Streamlit, **Refresh devices**, choose the phone and press **Connect**.
+4. Leave **Mode → Test** selected. No calibration is required.
+5. Face the phone, then turn sideways or look up/down. Brief movements wait for the configured delay.
 
-1. Look at your normal screen position. Click **Calibrate screen** and hold steadily for five seconds.
-2. Look at your normal notebook-writing position. Click **Calibrate notebook** and hold for five seconds.
-3. Both saved positions are accepted. Recalibrate whenever the camera or seating arrangement changes.
-4. Try normal reading, writing and short glances, then a sustained turn away. Inspect measurements and reasons before changing thresholds.
+Results are **Facing phone screen**, **Looking away**, or **Unknown**. Missing/multiple faces, unavailable camera data and stale measurements become Unknown, not automatically looking away. During a short movement the previous result can remain until the delay expires; the reason displays the pending condition.
+
+## 5. Optional: Tune / calibrate mode
+
+Choose **Tune / calibrate** to adjust angle tolerances, delays and smoothing. Inspect the live measurements and click **Save settings and test** when satisfied. This returns to the simple Test screen using the saved values. Merely switching back to Test discards unsaved edits.
+
+The optional **Capture front-facing position** control records a five-second median while looking directly at the phone. It is only needed if default front-facing angles do not fit the camera placement. It retries on movement greater than 10 degrees, missing faces or measurement gaps. **Use default front-facing angles** removes this personal reference. There is no second position to capture.
 
 Defaults:
 
 | Setting | Initial value |
 | --- | --- |
-| Horizontal tolerance around either position | ±20° |
-| Vertical tolerance around either position | ±15° |
-| Sustained outside-position delay | 5 seconds |
-| Inside-position recovery delay | 2 seconds |
+| Front-facing reference | yaw 0°, pitch 0° |
+| Horizontal tolerance | ±20° |
+| Vertical tolerance | ±15° |
+| Looking-away delay | 5 seconds |
+| Facing-screen delay | 2 seconds |
 | Smoothing alpha | 0.3 |
 | Missing/stale measurement deadline | 1 second |
-| On-screen reminder cooldown | 30 seconds |
 
-The defaults are starting hypotheses, not measured accuracy claims. A short glance retains the prior assessed status until the relevant delay has elapsed; the reason shows the pending condition. Missing/multiple faces or invalid data always reset to **Unknown**. Both calibration positions are required before assessment.
+The defaults are starting hypotheses, not accuracy guarantees. The only accepted head position is front-facing, around the default or optionally captured reference.
 
-**Pause assessment** pauses rules, not the phone camera. **Disconnect dashboard** stops the laptop reader only. Use **Stop on the phone** to release its camera; leaving the app also stops it. Returning to the phone app requires pressing Start again.
+**Disconnect** stops the laptop reader only. Use **Stop on the phone** to release its camera. Leaving the phone app stops capture; returning requires pressing Start again. The app does not monitor you in the background while using another Android app.
 
-The calibration panel uses a five-second median and retries if the head moves more than 10° from the resulting median. Invalid readings or gaps restart that collection. Normal positions that are close together are allowed.
+Saved settings last for the current Streamlit browser session. Use **Download current settings** to keep a version 2 JSON file, and load it under **Reuse settings on another local dashboard** later. Older two-position calibration exports are intentionally rejected. Captured reference angles depend on the person and camera placement; generic thresholds still need checking on each setup.
 
-Use the manual-label buttons to mark what was actually happening at that moment. Optional downloads contain settings, person-specific calibration, numeric measurements and point-in-time labels. The dashboard keeps at most 1,500 recent samples in memory; it does not automatically write recordings or exports to disk. These exports are still personal data. Android temporarily buffers the numeric telemetry in its system logs.
+Manual labels and measurement exports are hidden in an optional Tune-mode expander. The dashboard retains at most 1,500 recent samples in memory and does not automatically write video or exports to disk. Numeric face measurements and captured references are still personal data. Android temporarily buffers numeric telemetry in its system logs.
+
+## Can another user connect their phone through Streamlit Cloud?
+
+**Not with this USB implementation.** Python and ADB execute on the machine hosting Streamlit. On Streamlit Cloud that is a remote server, not the laptop with the user's USB cable. Installing ADB on that server does not give it access to the user's phone.
+
+Another user can install the APK, run this dashboard **locally on their own laptop**, connect their phone by USB and use Test mode with defaults or an imported settings file. Remote phone-to-dashboard delivery needs the additional receiver described under Next steps.
 
 ## Troubleshooting
 
@@ -109,10 +122,10 @@ Use the manual-label buttons to mark what was actually happening at that moment.
 - **No phone:** check the data cable, USB debugging and Windows USB driver.
 - **Unauthorized:** unlock the phone and accept its debugging prompt; refresh devices.
 - **Connected, no data:** install this project's app and press Start. The old APK does not emit this contract.
-- **Unknown:** inspect the reason. Face missing, multiple faces, a small/out-of-frame face, missing calibration or old measurements are deliberately not classified.
+- **Unknown:** inspect the reason. Face missing, multiple faces, a small/out-of-frame face or old measurements are deliberately not classified. Calibration is not required.
 - **Dashboard fell behind:** old readings are discarded and timers restart. Keep the local browser tab active while tuning.
-- **After reconnect/restart:** connect the dashboard again. If the phone camera moved, clear and redo calibration.
-- **Using a different camera:** recalibrate; ML Kit angles refer to the input image, not the mirrored front-camera preview.
+- **After reconnect/restart:** reconnect the dashboard. If using a personal reference and the camera moved, use default front-facing angles or capture a new reference.
+- **Using a different camera:** ML Kit angles refer to the input image, not the mirrored front-camera preview. Camera placement can require different tolerances or an optional reference.
 - **APK update incompatible:** APKs built on different computers/runners can have different debug signing keys. Remove the previous POC app from the phone manually before installing the new debug build.
 
 You can inspect just the app's live output yourself:
