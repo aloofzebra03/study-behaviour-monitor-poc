@@ -1,0 +1,7 @@
+#!/bin/sh
+if [ -n "$JAVA_HOME" ]; then
+    STUDY_JAVA="$JAVA_HOME/bin/java"
+else
+    STUDY_JAVA=java
+fi
+exec "$STUDY_JAVA" -classpath "$(dirname "$0")/gradle/wrapper/gradle-wrapper.jar" org.gradle.wrapper.GradleWrapperMain "$@"

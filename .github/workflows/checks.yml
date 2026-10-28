@@ -1,0 +1,34 @@
+name: Check rules and build Android APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check Python rules and telemetry
+        run: python3 -m unittest discover -s tests -v
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Prepare Android build packages
+        run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
+      - name: Build and lint the app
+        working-directory: android
+        run: bash gradlew assembleDebug lintDebug --no-daemon
+      - name: Downloadable debug APK
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: study-monitor-debug-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 14
