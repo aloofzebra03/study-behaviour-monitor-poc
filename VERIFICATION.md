@@ -7,6 +7,9 @@
 - Streamlit testing API: initial screen rendered without exceptions; missing ADB produced an actionable message; synthetic incoming measurements exercised studying, sustained-away and stale-data transitions without UI exceptions.
 - Manual-label and JSON-export controls worked with synthetic measurements. These were software checks, not camera observations.
 - Current two-mode UI: Test starts without sliders or calibration buttons; Tune exposes five tuning sliders and optional reference capture. Save switches back to Test with the edited settings. Unsaved changes are discarded when returning to Test. Switching modes cancels an in-progress capture. These interactions passed Streamlit testing-API checks without exceptions.
+- Latest UI redesign: Test renders a large color-coded HTML status card, Tune places controls and results in separate adjacent Streamlit columns, and settings download is directly visible. Layout structure and Save-to-Test behaviour passed Streamlit testing-API checks. Static CSS and escaped dynamic reason text are used; no generated HTML is accepted from a model.
+- Download payload checks confirmed Tune downloads contain current unsaved edits, Test downloads match saved settings, and completing optional reference capture refreshes the downloaded reference angles and re-enables Save/Download. No personal reference was used for these synthetic checks.
+- Desktop visual verification was attempted using the computer-use/browser helper, but the runtime repeatedly exited before initialization (`CreateProcessWithLogonW failed: 267`). No screenshot-based verification is claimed. The functional UI checks above did run.
 - Python syntax checks passed.
 - A temporary loopback-only Streamlit process returned HTTP 200 and a healthy `/_stcore/health`; that process was stopped afterwards.
 - Pinned ML Kit and CameraX dependencies were available from Google's Maven repository.

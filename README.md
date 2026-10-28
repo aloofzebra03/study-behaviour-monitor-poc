@@ -82,11 +82,11 @@ The Android app writes only the dedicated `StudyMonitor` numeric log tag. The re
 4. Leave **Mode → Test** selected. No calibration is required.
 5. Face the phone, then turn sideways or look up/down. Brief movements wait for the configured delay.
 
-Results are **Facing phone screen**, **Looking away**, or **Unknown**. Missing/multiple faces, unavailable camera data and stale measurements become Unknown, not automatically looking away. During a short movement the previous result can remain until the delay expires; the reason displays the pending condition.
+The large central result is **FACING THE SCREEN**, **LOOKING AWAY**, or **CANNOT ASSESS YET**. Missing/multiple faces, unavailable camera data and stale measurements are Unknown, not automatically looking away. During a short movement the previous result can remain until its delay expires; a progress bar shows the pending change. Old head-angle values are not presented as live measurements.
 
 ## 5. Optional: Tune / calibrate mode
 
-Choose **Tune / calibrate** to adjust angle tolerances, delays and smoothing. Inspect the live measurements and click **Save settings and test** when satisfied. This returns to the simple Test screen using the saved values. Merely switching back to Test discards unsaved edits.
+Choose **Tune / calibrate**. Controls are on the **left** and the large live result and measurements are alongside them on the **right**. Adjust angle tolerances, delays and smoothing while watching the result. Click **Save settings and test** when satisfied. This returns to the simple Test screen using the saved values. Merely switching back to Test discards unsaved edits.
 
 The optional **Capture front-facing position** control records a five-second median while looking directly at the phone. It is only needed if default front-facing angles do not fit the camera placement. It retries on movement greater than 10 degrees, missing faces or measurement gaps. **Use default front-facing angles** removes this personal reference. There is no second position to capture.
 
@@ -106,7 +106,9 @@ The defaults are starting hypotheses, not accuracy guarantees. The only accepted
 
 **Disconnect** stops the laptop reader only. Use **Stop on the phone** to release its camera. Leaving the phone app stops capture; returning requires pressing Start again. The app does not monitor you in the background while using another Android app.
 
-Saved settings last for the current Streamlit browser session. Use **Download current settings** to keep a version 2 JSON file, and load it under **Reuse settings on another local dashboard** later. Older two-position calibration exports are intentionally rejected. Captured reference angles depend on the person and camera placement; generic thresholds still need checking on each setup.
+Saved settings last for the current Streamlit browser session. Use the visible **Download tuned settings (.json)** button in Tune, or **Download active settings (.json)** in Test, to keep a version 2 file. The Tune download includes the current edits, even before Save. Downloads and Save are disabled while a reference capture is incomplete.
+
+To use someone else's tuned settings, load their file in the sidebar under **Import settings → Load a tuned settings file (.json)**. Validated settings become active in the current dashboard and are saved for Test mode. You do not need to edit code or reinstall the phone app. This does **not** overwrite repository defaults or retrain ML Kit. Older two-position exports and malformed settings are rejected. Captured reference angles depend on the person and camera placement; generic thresholds still need checking on each setup.
 
 Manual labels and measurement exports are hidden in an optional Tune-mode expander. The dashboard retains at most 1,500 recent samples in memory and does not automatically write video or exports to disk. Numeric face measurements and captured references are still personal data. Android temporarily buffers numeric telemetry in its system logs.
 
@@ -115,6 +117,20 @@ Manual labels and measurement exports are hidden in an optional Tune-mode expand
 **Not with this USB implementation.** Python and ADB execute on the machine hosting Streamlit. On Streamlit Cloud that is a remote server, not the laptop with the user's USB cable. Installing ADB on that server does not give it access to the user's phone.
 
 Another user can install the APK, run this dashboard **locally on their own laptop**, connect their phone by USB and use Test mode with defaults or an imported settings file. Remote phone-to-dashboard delivery needs the additional receiver described under Next steps.
+
+Connecting a new phone does **not** automatically install the APK, enable USB debugging or approve camera access. Install the POC APK once per phone and approve the required prompts yourself.
+
+## Share with another person without Git
+
+They do not need to clone with Git. On the GitHub repository, choose **Code → Download ZIP** and extract it. Download the built APK from the Actions artifact as described above, and install it on the phone. Install Python (tested with 3.12) and Google Platform Tools on the laptop, then run from the extracted project directory:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py --server.address 127.0.0.1
+```
+
+Extract Platform Tools into `tools/platform-tools`, or enter its `adb.exe` path in **Advanced USB setup**. Enable USB debugging, approve the laptop, open the phone app and press Start. Open the local dashboard, refresh devices and connect. Optional: import the settings file shared by the person who tuned them.
 
 ## Troubleshooting
 
@@ -145,3 +161,5 @@ See `VERIFICATION.md` for checks actually performed and those still needing hard
 ## Next steps
 
 For a mentor to use their phone with a remotely hosted dashboard, add a small FastAPI receiver for numeric measurements. The phone would send them over the internet instead of USB. Keep the same telemetry fields and rule engine. This remote mode is **not implemented**: hosted Streamlit cannot read a phone connected to someone else's laptop by USB.
+
+Keeping USB with a cloud dashboard would instead require a small **local USB bridge** that reads the phone on the laptop and forwards measurements to a hosted receiver. A browser-side WebUSB/ADB component is another possible direction but needs substantial browser-specific work and is not a drop-in Streamlit feature. Neither approach is implemented in this POC. Installing ADB on Streamlit Cloud alone does not solve the connection problem.

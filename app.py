@@ -5,6 +5,7 @@ import time
 from collections import deque
 from dataclasses import replace
 from datetime import datetime, timezone
+from html import escape
 
 import streamlit as st
 
@@ -14,9 +15,27 @@ from study_monitor.usb import UsbReader, find_adb, list_devices
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 LOG = logging.getLogger("phone_dashboard")
 st.set_page_config(page_title="Phone screen monitor", layout="wide")
-st.title("Is the student facing the phone?")
-st.caption("ML Kit runs on your phone. Only numeric measurements reach this laptop over USB.")
-st.info("This estimates head direction, not exact eye gaze or attention. Keep the camera near eye level and the phone app open.")
+st.markdown("""
+<style>
+  .stMainBlockContainer { padding-top: 3.5rem; }
+  .phone-status { border: 1px solid; border-radius: 22px; padding: 30px;
+                  min-height: 290px; display: flex; flex-direction: column; justify-content: center; }
+  .phone-status.test { min-height: 350px; padding: 40px; text-align: center; }
+  .phone-status.facing { background: #eaf8f1; border-color: #74b99b; color: #123e2f; }
+  .phone-status.away { background: #fff2e8; border-color: #dba16e; color: #74380d; }
+  .phone-status.unknown { background: #f1f4f8; border-color: #aab8c9; color: #33465e; }
+  .phone-status .eyebrow { font-size: .82rem; font-weight: 700; letter-spacing: .14em; margin-bottom: 16px; }
+  .phone-status .status-title { font-size: clamp(2.5rem, 4.5vw, 4.8rem); font-weight: 850;
+                               line-height: 1.05; letter-spacing: -.035em; margin: 0 0 20px; }
+  .phone-status.test .status-title { font-size: clamp(3rem, 7vw, 6rem); }
+  .phone-status .reason { font-size: 1rem; line-height: 1.5; margin: 0; }
+  @media (max-width: 700px) {
+    .phone-status, .phone-status.test { min-height: 250px; padding: 24px; }
+  }
+</style>
+""", unsafe_allow_html=True)
+st.title("Phone screen monitor")
+st.caption("ML Kit runs on your phone · USB-only POC · Head direction estimate, not exact eye gaze or attention")
 
 # Upgrade browser sessions that still have the older two-position engine.
 if "engine" not in st.session_state or getattr(st.session_state.engine, "version", None) != 2:
@@ -73,7 +92,7 @@ def load_uploaded_profile():
         st.session_state.engine.load_profile(json.loads(uploaded.getvalue()))
         st.session_state.saved_profile = st.session_state.engine.export_profile()
         seed_tuning_widgets()
-        st.session_state.notice = "Settings loaded. Switch to Test to use them."
+        st.session_state.notice = "Settings imported and saved for this browser session. They are now active."
     except (ValueError, TypeError, KeyError) as exc:
         st.session_state.notice = f"Could not load settings: {exc}"
 
@@ -117,17 +136,20 @@ with st.sidebar:
         st.session_state.engine.reset("Dashboard disconnected.")
         record_event("Dashboard disconnected. Stop the camera on the phone.")
     st.caption("Disconnect stops only the USB reader. Start / Stop on the phone controls its camera.")
+    st.divider()
+    st.subheader("Import settings")
+    st.file_uploader("Load a tuned settings file (.json)", type=["json"], key="profile_upload", on_change=load_uploaded_profile)
+    st.caption("Use a file downloaded after tuning. This updates the current dashboard, not the phone model or code defaults.")
 
-engine = st.session_state.engine
-if tuning:
-    st.subheader("Tune settings, then save and test")
-    st.caption("No notebook position. A personal front-facing reference is optional; default angles work without calibration.")
-    cols = st.columns(2)
-    yaw = cols[0].slider("Allowed sideways turn ± degrees", 1.0, 90.0, float(engine.settings.yaw_tolerance), 1.0, key="tune_yaw_tolerance")
-    pitch = cols[1].slider("Allowed up/down tilt ± degrees", 1.0, 90.0, float(engine.settings.pitch_tolerance), 1.0, key="tune_pitch_tolerance")
-    away = cols[0].slider("Looking-away delay (seconds)", 1.0, 30.0, float(engine.settings.away_seconds), 0.5, key="tune_away_seconds")
-    recovery = cols[1].slider("Facing-screen delay (seconds)", 0.2, 10.0, float(engine.settings.recovery_seconds), 0.2, key="tune_recovery_seconds")
-    alpha = cols[0].slider("Smoothing: higher responds faster", 0.05, 1.0, float(engine.settings.smoothing_alpha), 0.05, key="tune_smoothing_alpha")
+def render_tuning_controls():
+    engine = st.session_state.engine
+    st.subheader("Tune the settings")
+    st.caption("The result stays alongside these controls. Changes apply to the live preview immediately.")
+    yaw = st.slider("Allowed sideways turn ± degrees", 1.0, 90.0, float(engine.settings.yaw_tolerance), 1.0, key="tune_yaw_tolerance")
+    pitch = st.slider("Allowed up/down tilt ± degrees", 1.0, 90.0, float(engine.settings.pitch_tolerance), 1.0, key="tune_pitch_tolerance")
+    away = st.slider("Looking-away delay (seconds)", 1.0, 30.0, float(engine.settings.away_seconds), 0.5, key="tune_away_seconds")
+    recovery = st.slider("Facing-screen delay (seconds)", 0.2, 10.0, float(engine.settings.recovery_seconds), 0.2, key="tune_recovery_seconds")
+    alpha = st.slider("Smoothing: higher responds faster", 0.05, 1.0, float(engine.settings.smoothing_alpha), 0.05, key="tune_smoothing_alpha")
     engine.update_settings(replace(engine.settings, yaw_tolerance=yaw, pitch_tolerance=pitch,
                                    away_seconds=away, recovery_seconds=recovery, smoothing_alpha=alpha))
     with st.expander("Optional: capture a front-facing reference"):
@@ -140,15 +162,29 @@ if tuning:
         if buttons[2].button("Use default front-facing angles"):
             engine.use_default_reference()
         st.caption(engine.calibration_message)
-    st.button("Save settings and test", type="primary", on_click=save_and_test)
-    with st.expander("Reuse settings on another local dashboard"):
-        st.file_uploader("Load phone-screen settings JSON", type=["json"], key="profile_upload", on_change=load_uploaded_profile)
-        st.download_button("Download current settings", json.dumps(engine.export_profile(), indent=2),
-                           "phone_screen_settings.json", "application/json", on_click="ignore")
-        st.caption("Captured reference angles are person- and camera-specific. Reused thresholds still need checking on another setup.")
-else:
-    st.caption(f"Saved settings: sideways ±{engine.settings.yaw_tolerance:g}°, up/down ±{engine.settings.pitch_tolerance:g}°, "
-               f"away delay {engine.settings.away_seconds:g}s, facing delay {engine.settings.recovery_seconds:g}s. No calibration required.")
+    capturing = engine.calibration is not None
+    st.button("Save settings and test", type="primary", on_click=save_and_test, disabled=capturing, use_container_width=True)
+    st.download_button("Download tuned settings (.json)", json.dumps(engine.export_profile(), indent=2),
+                       "phone_screen_settings.json", "application/json", on_click="ignore", disabled=capturing,
+                       use_container_width=True)
+    st.caption("Share this JSON so someone else can import your settings. Download includes current edits; Save makes them active in Test. A captured reference is person- and camera-specific.")
+
+
+def render_status_card(engine):
+    title, style = {
+        FACING: ("FACING THE SCREEN", "facing"),
+        LOOKING_AWAY: ("LOOKING AWAY", "away"),
+        UNKNOWN: ("CANNOT ASSESS YET", "unknown"),
+    }[engine.status]
+    size = "" if tuning else " test"
+    # Only fixed class names are used; dynamic text is always escaped.
+    st.markdown(f'<section class="phone-status {style}{size}" role="status" aria-live="polite">'
+                f'<div class="eyebrow">LIVE HEAD-DIRECTION RESULT</div>'
+                f'<div class="status-title">{title}</div>'
+                f'<p class="reason">{escape(engine.reason)}</p></section>', unsafe_allow_html=True)
+    if engine.candidate and engine.candidate != engine.status:
+        delay = engine.settings.recovery_seconds if engine.candidate == FACING else engine.settings.away_seconds
+        st.progress(min(engine.elapsed / delay, 1.0), text=f"Confirming: {engine.candidate} · {engine.elapsed:.1f}/{delay:g}s")
 
 
 @st.fragment(run_every=0.25)
@@ -156,6 +192,8 @@ def live_dashboard():
     engine = st.session_state.engine
     reader = st.session_state.reader
     now = time.monotonic()
+    connection = None
+    reference_completed = False
     if reader:
         batch, gap = reader.drain()
         connection = reader.snapshot()
@@ -165,31 +203,39 @@ def live_dashboard():
             measurement = received.measurement
             st.session_state.latest = measurement.as_dict()
             st.session_state.latest_capture = received.capture_time
+            capturing = engine.calibration is not None
             engine.process(measurement)
+            reference_completed |= capturing and engine.calibration is None
             st.session_state.history.append({"time_utc": datetime.now(timezone.utc).isoformat(),
                                              **measurement.as_dict(), **engine.snapshot()})
         if not connection["alive"]:
             engine.reset(connection["error"] or "USB reader stopped; reconnect the dashboard.")
         elif st.session_state.latest_capture is None or now - st.session_state.latest_capture > 1:
             engine.reset("No fresh data. Keep the phone app open, grant camera access and press Start.")
-        st.caption(f"USB: {connection['status']} · accepted {connection['accepted']} · discarded {connection['discarded']}")
-        if connection["error"]:
-            st.error(connection["error"])
     else:
         engine.reset("Connect a USB phone to begin.")
     if engine.status != st.session_state.last_status:
         record_event(f"{engine.status}: {engine.reason}")
         st.session_state.last_status = engine.status
+    if reference_completed:
+        # Refresh the download payload and re-enable Save after async capture.
+        st.session_state.notice = "Front-facing reference captured. You can now save or download these settings."
+        st.rerun()
     st.subheader("Live result")
-    {UNKNOWN: st.warning, FACING: st.success, LOOKING_AWAY: st.info}[engine.status](engine.status)
-    st.write(engine.reason)
+    render_status_card(engine)
+    if connection:
+        st.caption(f"USB: {connection['status']} · samples {connection['accepted']} · discarded {connection['discarded']}")
+        if connection["error"]:
+            st.error(connection["error"])
     if engine.calibration is not None:
         st.caption(engine.calibration_message)
     latest = st.session_state.latest or {}
-    with st.expander("Live model measurements and rule details", expanded=tuning):
-        for col, name, label in zip(st.columns(3), ("face_count", "yaw", "pitch"), ("Faces", "Sideways / yaw", "Up-down / pitch")):
-            value = latest.get(name)
-            col.metric(label, "—" if value is None else f"{value:g}" + ("°" if name != "face_count" else ""))
+    fresh = bool(connection and connection["alive"] and st.session_state.latest_capture is not None
+                 and now - st.session_state.latest_capture <= 1)
+    for col, name, label in zip(st.columns(3), ("face_count", "yaw", "pitch"), ("Faces", "Sideways / yaw", "Up-down / pitch")):
+        value = latest.get(name) if fresh else None
+        col.metric(label, "—" if value is None else f"{value:g}" + ("°" if name != "face_count" else ""))
+    with st.expander("Model measurements and rule details"):
         if st.session_state.latest_capture is not None:
             st.caption(f"Sample age: {max(0, now - st.session_state.latest_capture):.1f}s. Old values are diagnostic only.")
         st.json({"measurement": latest, "decision": engine.snapshot()})
@@ -212,5 +258,17 @@ def live_dashboard():
             st.write(list(st.session_state.events)[-10:])
 
 
-live_dashboard()
+if tuning:
+    controls, result = st.columns([1, 1.5], gap="large", vertical_alignment="top")
+    with controls:
+        render_tuning_controls()
+    with result:
+        live_dashboard()
+else:
+    engine = st.session_state.engine
+    st.caption(f"Saved settings: sideways ±{engine.settings.yaw_tolerance:g}°, up/down ±{engine.settings.pitch_tolerance:g}°, "
+               f"away delay {engine.settings.away_seconds:g}s, facing delay {engine.settings.recovery_seconds:g}s. No calibration required.")
+    live_dashboard()
+    st.download_button("Download active settings (.json)", json.dumps(engine.export_profile(), indent=2),
+                       "phone_screen_settings.json", "application/json", on_click="ignore")
 st.caption("USB testing must run on the laptop connected to the phone. Streamlit Cloud cannot access that laptop's USB devices.")
