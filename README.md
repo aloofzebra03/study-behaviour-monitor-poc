@@ -70,7 +70,7 @@ micromamba run -n langchain python -m streamlit run app.py --server.address 127.
 
 The only Python dependency is Streamlit 1.50.0. The USB reader, validation, rules and tests use Python's standard library. Python 3.10+ is required.
 
-Open `http://localhost:8501`. Enter the full path to `adb.exe` if it is not on PATH. Click **Refresh devices**, choose the phone and click **Connect dashboard**. Open **Study Monitor USB** on the phone, allow camera access and press **Start**. No port forwarding is required.
+Open `http://localhost:8501`. Enter the full path to `adb.exe` if it is not on PATH. Alternatively, extract Platform Tools into this project's ignored `tools` folder so `tools/platform-tools/adb.exe` exists; the app discovers it automatically. Click **Refresh devices**, choose the phone and click **Connect dashboard**. Open **Study Monitor USB** on the phone, allow camera access and press **Start**. No port forwarding is required.
 
 The Android app writes only the dedicated `StudyMonitor` numeric log tag. The reader does not clear your phone logs or stop the shared ADB server. No root access is required.
 

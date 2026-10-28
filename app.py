@@ -41,7 +41,7 @@ def record_event(text):
 
 with st.sidebar:
     st.header("USB connection")
-    adb_path = st.text_input("ADB executable (blank uses PATH)", placeholder=r"D:\Android\platform-tools\adb.exe")
+    adb_path = st.text_input("ADB executable (blank auto-detects)", placeholder=r"D:\Android\platform-tools\adb.exe")
     if st.button("Refresh devices"):
         try:
             st.session_state.devices = list_devices(find_adb(adb_path))

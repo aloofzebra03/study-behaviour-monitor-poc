@@ -8,6 +8,7 @@ import subprocess
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 from .telemetry import Measurement, parse_measurement
 
@@ -21,7 +22,8 @@ def command(args, **kwargs):
 
 
 def find_adb(configured=""):
-    candidate = configured.strip() or os.environ.get("ADB_PATH", "") or shutil.which("adb")
+    local_adb = Path(__file__).resolve().parents[1] / "tools" / "platform-tools" / ("adb.exe" if os.name == "nt" else "adb")
+    candidate = configured.strip() or os.environ.get("ADB_PATH", "") or shutil.which("adb") or str(local_adb)
     if candidate and os.path.isfile(candidate):
         return os.path.abspath(candidate)
     raise FileNotFoundError("ADB not found. Install Android SDK Platform Tools and enter the full path to adb.exe.")

@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from study_monitor.rules import OFF_TASK, STUDYING, UNKNOWN, RuleEngine, Settings
 from study_monitor.telemetry import parse_measurement
-from study_monitor.usb import FreshnessGate, Received, UsbReader, list_devices
+from study_monitor.usb import FreshnessGate, Received, UsbReader, find_adb, list_devices
 
 
 def sample(t, yaw=0, pitch=0, count=1, run="run-a", seq=None):
@@ -141,6 +141,10 @@ class RulesTests(unittest.TestCase):
 
 
 class UsbTests(unittest.TestCase):
+    def test_explicit_invalid_adb_path_has_clear_error(self):
+        with self.assertRaisesRegex(FileNotFoundError, "ADB not found"):
+            find_adb("missing-study-monitor-adb.exe")
+
     def test_freshness_duplicate_history_and_old_runs(self):
         gate = FreshnessGate(1000, 100)
         self.assertEqual(gate.accept(sample(0.9), 100), (False, "historical"))
