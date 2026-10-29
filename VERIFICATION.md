@@ -1,20 +1,19 @@
-# Verification — 28 October 2026
+# Verification — 29 October 2026
 
-## Completed locally
+## Current reading/writing workflow: completed locally
 
-- Used the existing `langchain` Python 3.12 environment with its installed Streamlit 1.50.0. No environment packages were changed.
-- 24 current offline unit checks passed: telemetry validation, default phone-facing reference without calibration, optional five-second capture, unstable/interrupted capture, short glances, sustained turning, recovery, missing/multiple faces, settings resets, timestamp gaps, run changes, stale/duplicate/out-of-order records, reader errors, invalid ADB paths, backlog handling and settings-profile validation/round trips.
-- Streamlit testing API: initial screen rendered without exceptions; missing ADB produced an actionable message; synthetic incoming measurements exercised studying, sustained-away and stale-data transitions without UI exceptions.
-- Manual-label and JSON-export controls worked with synthetic measurements. These were software checks, not camera observations.
-- Current two-mode UI: Test starts without sliders or calibration buttons; Tune exposes five tuning sliders and optional reference capture. Save switches back to Test with the edited settings. Unsaved changes are discarded when returning to Test. Switching modes cancels an in-progress capture. These interactions passed Streamlit testing-API checks without exceptions.
-- Latest UI redesign: Test renders a large color-coded HTML status card, Tune places controls and results in separate adjacent Streamlit columns, and settings download is directly visible. Layout structure and Save-to-Test behaviour passed Streamlit testing-API checks. Static CSS and escaped dynamic reason text are used; no generated HTML is accepted from a model.
-- Download payload checks confirmed Tune downloads contain current unsaved edits, Test downloads match saved settings, and completing optional reference capture refreshes the downloaded reference angles and re-enables Save/Download. No personal reference was used for these synthetic checks.
-- Desktop visual verification was attempted using the computer-use/browser helper, but the runtime repeatedly exited before initialization (`CreateProcessWithLogonW failed: 267`). No screenshot-based verification is claimed. The functional UI checks above did run.
+- Used the existing langchain Python 3.12 environment and installed Streamlit 1.50.0. No environment packages were changed.
+- All **34 offline unit checks passed**. Coverage includes telemetry validation; required reading/writing setup; accepting either posture; synthetic left/right/front and elevated camera-reference angles; brief glances; sustained departures and recovery; missing/multiple faces; breaks; unstable/interrupted captures; timestamp gaps; duplicate/out-of-order data; stale USB buffers; reader shutdown; settings validation and safe import.
+- Synthetic placement checks exercise relative-angle logic only. They do not establish real camera detection accuracy from those positions.
+- Captures complete at an exact five-second boundary even when recording starts at a fractional second. A regression check covers the floating-point boundary.
+- Streamlit testing-API checks passed: initial Test requests setup; controls and large result occupy adjacent Tune columns; Save is disabled until both positions exist; placement metadata can change; Save switches to Test with both references; break/resume works; Phone moved clears live and saved references; switching modes cannot restore an invalidated setup.
+- A one-off UI check exercised the actual reading and writing capture buttons with synthetic measurement batches. Both asynchronous completions refreshed download payloads; Save became enabled; Test download matched the saved setup.
+- Profile checks confirmed thresholds-only import is the default; reference reuse is explicit; old version 2 phone-facing files never supply study references; invalid imports do not partially overwrite settings.
 - Python syntax checks passed.
-- A temporary loopback-only Streamlit process returned HTTP 200 and a healthy `/_stcore/health`; that process was stopped afterwards.
-- Pinned ML Kit and CameraX dependencies were available from Google's Maven repository.
-- Official Gradle 8.9 wrapper binary downloaded; SHA-256 matched the published checksum.
-- Google's standalone Windows Platform Tools were downloaded into ignored `tools/platform-tools`; no PATH or Python environment change was made. ADB 37.0.1 starts successfully and is auto-discovered by the dashboard.
+- The updated loopback-only Streamlit dashboard returned HTTP 200 and `ok` from its health endpoint on port 8501.
+- Screenshot-based visual verification is not claimed. Earlier desktop/browser helper attempts failed before initialization. Functional Streamlit checks above are not a substitute for viewing the dashboard on different screen sizes.
+- ADB starts successfully, but **no phone was connected** during these new reading/writing checks.
+- No Android code changed for this workflow. The existing APK sends the same measurements and does not need reinstalling.
 
 ## Android build
 
@@ -24,7 +23,7 @@ The GitHub Actions [build run 40631499269](https://github.com/aloofzebra03/study
 
 The built APK was downloaded to ignored `android/app/build/outputs/apk/debug/app-debug.apk` (42,424,454 bytes). Its SHA-256 is `7a73ed9173f3e425f609483815b382323cdc5c85861e1f4f811b86665ae3e384`. The APK contains ARM64, ARMv7, x86 and x86-64 native libraries. Its artifact download checksum was also verified against GitHub's digest.
 
-The subsequent two-mode change is Python-only; the installed APK's numeric contract remains compatible. Its startup hint about calibrating positions belongs to the earlier dashboard; the new Test mode does not require calibration.
+The dashboard changes are Python-only; the installed APK's numeric contract remains compatible. The current dashboard requires reading and writing captures before assessment.
 
 ## Physical-phone observations
 
@@ -35,11 +34,13 @@ The subsequent two-mode change is Python-only; the installed APK's numeric contr
 
 ## Still needs manual phone verification
 
-- Start the phone app again and verify the live dashboard receives fresh measurements continuously.
-- Check rotated input/head angles, face-size rejection and detection with glasses/poor lighting.
-- Verify Start/Stop and background/foreground camera release.
-- Test USB removal, authorization, reconnect and phone-app restart.
-- Compare human-observed facing/away behaviour against predictions in default Test mode and with tuned settings. Check optional front-facing reference capture.
-- Measure detector latency, battery impact and heating on a low-cost phone over a sustained session.
+- Connect a phone, start its camera and verify continuous fresh data in the new dashboard.
+- Capture actual book-reading and writing positions, then compare human observations against the relative-posture result.
+- Try a fixed phone on the left, right and front at practical heights. Verify the face remains detectable in both activities. Extreme side/overhead views may be unsuitable.
+- Check brief glances, sustained departures, normal page scanning, returning to work, breaks and missing/multiple faces.
+- Move the phone/book/seating, use Phone moved / redo setup and verify recapture.
+- Check capture stability, rotated input, face size, glasses and poor lighting.
+- Verify phone Start/Stop, foreground/background camera release, USB removal/reconnect and app restart.
+- Measure latency, battery impact and sustained heating on a low-cost phone.
 
-No real phone performance or attention-detection accuracy is claimed.
+No actual attention/learning measurement or physical placement accuracy is claimed. Historical Samsung detector observations above confirm model execution, not validation of the new study-posture rules.

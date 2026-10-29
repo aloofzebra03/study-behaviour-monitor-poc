@@ -1,6 +1,6 @@
 # Study Behaviour Monitor — USB POC
 
-Use your Android phone's camera to estimate whether your head is **facing the phone screen** or **looking away**. View the result and tune its settings on your laptop.
+Use your Android phone's camera to compare a student's head posture with their usual **book reading and writing positions**. The phone monitors from a fixed position; the student does not need to look at its screen. View and tune the result on your laptop.
 
 The model runs on the **phone**, not the laptop. Only numeric measurements travel over USB. The phone shows the camera preview; the laptop does not receive video.
 
@@ -8,7 +8,7 @@ The model runs on the **phone**, not the laptop. Only numeric measurements trave
 Phone camera → Google ML Kit → USB cable → local Streamlit dashboard
 ~~~
 
-**Important:** this estimates head direction, not exact eye gaze, attention or learning. Facing the phone does not prove someone is reading it. There is no notebook position and calibration is optional.
+**Important:** this estimates study posture, not exact eye gaze, attention or learning. A matching posture does not prove concentration, and a different posture does not prove distraction. Capture reading and writing positions after placing the phone. Both are required before assessment.
 
 ## Before you start
 
@@ -220,60 +220,75 @@ In the left sidebar:
 
 The dashboard finds tools/platform-tools/adb.exe automatically. If you keep ADB elsewhere, expand **Advanced USB setup** and enter the full path to **adb.exe**, not just its folder.
 
+## Set up reading and writing
+
+Select **Tune / setup**. Controls are on the **left** and the large live result is alongside them on the **right**.
+
+1. Place the phone securely on the **left, right or in front**, at the height you intend to use. Keep the phone, book and seating fixed afterwards.
+2. Keep one face visible in good light while the student reads **and** writes. A front-diagonal view is a useful starting point; a steep overhead or extreme side view may lose the face. This system cannot guarantee detection from every placement.
+3. Choose **Phone position** and **Camera height**. These labels document the setup; they do not calculate the student's head angles.
+4. Press **Capture reading (5s)**. Read the usual material in a normal, reasonably steady posture for five seconds.
+5. Press **Capture writing (5s)**. Write normally for five seconds.
+6. Wait for both positions to show **captured**, then press **Save setup and test**.
+
+The dashboard learns the median sideways and up/down head angles for each activity. It accepts either captured position. Capture needs continuous usable single-face readings; missing data or excessive movement restarts collection. Save stays disabled until both captures finish.
+
+If the person, phone, book or seating changes, press **Phone moved / redo setup** and capture both again. Changing the placement selectors or connecting a different phone also clears the recorded positions. Small movements of the physical setup are not detected automatically.
+
+Your face must be large enough in the camera input (roughly 100×100 pixels or more). If too small, move the phone closer. The preview may be mirrored; numeric angles follow the camera input.
+
+**The existing APK still works:** these rules run in Python, using the same numeric phone measurements. No APK reinstall or model retraining is needed for this update.
+
 ## Test whether it works
 
-Leave **Mode → Test** selected. No calibration is required.
+In **Test**, the result appears in large text:
 
-1. Hold or prop the phone with its front camera near eye level.
-2. Keep one face clearly visible and use reasonable lighting.
-3. Face the phone for at least **two seconds**. Expect the large green **FACING THE SCREEN** result.
-4. Turn your head moderately sideways, or sufficiently up/down, while keeping your face visible. Hold for about **six to seven seconds**: the default looking-away delay is five seconds, plus a little smoothing time. Expect **LOOKING AWAY**.
-5. Face the phone again for two seconds to recover.
-6. If your face disappears, multiple faces are detected or fresh data stops, expect **CANNOT ASSESS YET** rather than an automatic looking-away result.
+- **STUDY SETUP NEEDED:** reading or writing has not been captured.
+- **NORMAL STUDY POSTURE:** the measured head angles have stayed near either captured posture for two seconds.
+- **POSSIBLY AWAY FROM WORK:** angles have stayed outside both ranges for ten seconds, plus any smoothing delay. This is a friendly check-in, not a judgment of attention.
+- **CANNOT ASSESS:** missing/multiple faces, stopped camera, unavailable readings or stale USB data.
+- **TAKING A BREAK:** assessment is paused deliberately.
 
-A short glance can retain the previous result until the delay finishes. The progress bar shows a pending change. Open **Model measurements and rule details** if you want the raw values.
+Try reading, writing, a brief glance away and then a sustained head turn while keeping your face visible. A brief glance retains the previous confirmed result; a progress bar shows pending changes. Returning to either study position for two seconds confirms recovery.
 
-Turning completely away can make face detection fail. In that case **CANNOT ASSESS YET** is expected; the POC deliberately does not treat every missing face as looking away.
+Use **Taking a break** in the sidebar whenever needed. Resume clears decision timers; break time never counts as away time. This pauses assessment, **not the camera**. Use Stop on the phone to stop capture.
 
-Your face must be large enough in the camera input (roughly 100×100 pixels or more). If it is too small, move the phone closer. The preview may be mirrored; the numeric angles follow the camera input, not the mirrored display.
-
-The phone currently shows the camera app, not an integrated tutoring screen. This POC does not monitor you in the background while you use a different Android app.
+If the face disappears during writing or a large turn, the result becomes Cannot assess, not automatically away. Adjust the camera to see both activities. The phone currently shows its camera app, not a tutoring screen; it does not monitor in the background while another Android app is open.
 
 ## Tune the settings
 
-Select **Tune / calibrate**. The controls are on the **left** and the large live result stays alongside them on the **right**.
+In **Tune / setup**, open **Tune tolerances and timing** and adjust one control at a time while watching the result.
 
 | Control | Meaning | Default |
 | --- | --- | --- |
-| Allowed sideways turn | Larger values allow more left/right head movement | ±20° |
-| Allowed up/down tilt | Larger values allow more vertical head movement | ±15° |
-| Looking-away delay | How long to wait before confirming looking away | 5 seconds |
-| Facing-screen delay | How long to wait before confirming a return | 2 seconds |
+| Sideways tolerance | Allowed horizontal difference from either captured posture | ±20° |
+| Up/down tolerance | Allowed vertical difference from either captured posture | ±15° |
+| Check-in delay | Continuous time outside both ranges before an away check-in | 10 seconds |
+| Return-to-study confirmation | Continuous time near either position before confirming return | 2 seconds |
 | Smoothing | Lower = steadier/slower; higher = faster/more sensitive to jitter | 0.3 |
 
-Adjust one control at a time while watching the result. These values are starting points, not accuracy guarantees.
+These are starting points, not accuracy guarantees. Normal page scanning may need wider tolerances. Very wide tolerances can also accept unrelated postures. Head direction alone cannot distinguish every reading, writing or off-task activity.
 
-**Optional front-facing reference:** if the phone angle makes the default result unsuitable, open **Optional: capture a front-facing reference**, look directly at the phone and press **Capture front-facing position**. Hold steadily for five seconds. Movement or missing data makes collection restart. There is no notebook position. **Use default front-facing angles** removes this personal reference.
+### Save, download and reuse settings
 
-### Save, download and reuse someone's settings
+- **Save setup and test:** saves both captures and current thresholds for this browser session, then switches to Test.
+- **Download study settings (.json):** downloads current edits and captured positions as **study_monitor_settings.json**.
+- **Download active study settings (.json)** in Test: downloads the active setup.
+- Save requires both captures, completed collection and monitoring resumed from a break. Tune download is disabled during capture.
+- Switching modes without Save discards unsaved edits and captures. Download a file to keep settings across browser-session resets.
 
-- **Save settings and test:** saves the current settings for this browser session and switches to Test.
-- **Download tuned settings (.json):** downloads the current edits, even before you press Save.
-- **Download active settings (.json)** in Test: downloads the settings currently being tested.
-- Save/download are disabled while reference capture is incomplete.
-- Switching back to Test without Save discards unsaved edits.
+To import a file:
 
-To apply a file another person sent you:
+1. In the sidebar under **Import settings**, choose the JSON file.
+2. Normally leave **Reuse recorded positions: same person, phone, book and placement** unchecked. Only thresholds are imported; capture your own reading/writing positions.
+3. Check that option only when restoring the exact same person's unchanged setup. It is not suitable for transferring another student's camera geometry.
+4. Press **Apply imported settings**. Invalid files show an error without replacing the active setup.
 
-1. In the sidebar, find **Import settings**.
-2. Under **Load a tuned settings file (.json)**, choose the downloaded JSON.
-3. If valid, it becomes active and is saved for Test in this browser session. Invalid files show an error without replacing your settings.
+Version 3 files contain reading/writing positions and placement labels. Older version 2 phone-facing files can supply thresholds only; their camera-facing reference is never treated as a study posture, even if reuse is checked. Older formats are not supported.
 
-No source-code change, APK reinstall or model retraining is needed. Import updates this dashboard session, **not the repository's permanent defaults**. Download the file to keep it across browser-session resets.
+Import changes this dashboard session, **not the repository's permanent defaults**. No source change or APK reinstall is needed.
 
-A captured reference is specific to the person and camera position. Shared angle limits/delays can be useful, but verify them on the new setup. Older two-position calibration files are not supported.
-
-Optional manual labels and recent-measurement exports are inside a Tune-mode expander. The dashboard retains at most 1,500 recent measurements in memory. No video is saved or sent to the laptop. Numeric measurements and personal reference angles are still personal data; share them deliberately.
+Optional manual observation labels and exports are inside a Tune-mode expander. The dashboard retains at most 1,500 recent measurements in memory. Exports include numeric measurements, settings and potentially personal posture angles; share them deliberately. No video is saved or sent to the laptop.
 
 ## Run it again
 
@@ -288,7 +303,7 @@ After the one-time setup:
 ~~~
 
 4. Open localhost:8501 and click **Refresh devices → select phone → Connect**.
-5. Optionally import your saved JSON.
+5. Capture reading and writing in **Tune / setup**, then **Save setup and test**. You may instead restore saved positions only if the same person's phone, book and seating setup is unchanged.
 
 If you already use this project's installed Streamlit in the **langchain** environment instead of .venv:
 
@@ -315,8 +330,8 @@ To finish: press **Stop on the phone**, click **Disconnect** in Streamlit, then 
 | APK installation blocked | Read the phone's message. Check the device's installation policy or Samsung Auto Blocker if specifically mentioned; do not disable unrelated protections. |
 | Camera permission denied | Allow Camera for Study Monitor USB in Android Settings, then reopen the app and press Start. |
 | Connected but no live data | Press Start in this project's phone app, keep it in the foreground and check camera permission. The old base.apk does not send this contract. |
-| Cannot assess yet | Read the reason: waiting for the confirmation delay, missing/multiple/small faces or stale data. Calibration is optional, not a prerequisite. |
-| Wrong facing/away result | Put the camera near eye level; inspect angles; tune tolerances or capture an optional front-facing reference. Eyes can move independently of the head. |
+| Setup needed / cannot assess | Capture both reading and writing, then inspect the reason for missing/multiple/small faces or stale data. |
+| Wrong study/away result | Redo setup for the current person, phone, book and seating. Keep the face visible in both activities; tune tolerances. This does not measure eye gaze or actual attention. |
 | Dashboard fell behind | Keep the laptop tab active; stale readings are discarded and timers reset. |
 | Old-looking UI or import error after pulling updates | Stop this dashboard's terminal with Ctrl+C, run the launch command again, then refresh the page. |
 | Port 8501 is already in use | Stop your previous dashboard, or add --server.port 8502 to the launch command and open localhost:8502. |
@@ -370,7 +385,7 @@ Output: **android/app/build/outputs/apk/debug/app-debug.apk**, relative to the p
 | app.py | Test/Tune UI, USB controls, settings download/import |
 | study_monitor/telemetry.py | Validates messages from Android |
 | study_monitor/usb.py | Reads the USB log stream and rejects old/invalid data |
-| study_monitor/rules.py | Head-angle thresholds, optional reference capture and timing |
+| study_monitor/rules.py | Reading/writing capture, relative head-angle rules, breaks, timing and settings validation |
 | tests/ | Offline checks that do not require a phone |
 
 Run the offline checks from the project folder:

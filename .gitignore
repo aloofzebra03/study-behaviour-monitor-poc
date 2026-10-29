@@ -9,6 +9,7 @@ exports/
 calibration*.json
 study_session*.json
 phone_screen*.json
+study_monitor*.json
 *.log
 *.iml
 local.properties

@@ -4,7 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
-from study_monitor.rules import LOOKING_AWAY, FACING, UNKNOWN, RuleEngine, Settings
+from study_monitor.rules import NORMAL, AWAY, UNKNOWN, PAUSED, RuleEngine, Settings
 from study_monitor.telemetry import parse_measurement
 from study_monitor.usb import FreshnessGate, Received, UsbReader, find_adb, list_devices
 
@@ -47,121 +47,221 @@ class RulesTests(unittest.TestCase):
     def setUp(self):
         self.engine = RuleEngine()
         self.engine.update_settings(Settings(smoothing_alpha=1))
+        self.engine.study_positions = {
+            "reading": {"yaw": -35, "pitch": -20},
+            "writing": {"yaw": -40, "pitch": -45},
+        }
 
     def feed(self, start, end, **kwargs):
+        values = {"yaw": -35, "pitch": -20, **kwargs}
         for tick in range(round(start * 5), round(end * 5) + 1):
-            self.engine.process(sample(tick / 5, **kwargs))
+            self.engine.process(sample(tick / 5, **values))
 
-    def test_default_reference_and_looking_down(self):
+    def test_both_study_positions_are_accepted(self):
         self.feed(1, 3.2)
-        self.assertEqual(self.engine.status, FACING)
-        self.feed(3.4, 8.6, pitch=-30)
-        self.assertEqual(self.engine.status, LOOKING_AWAY)
-        self.assertFalse(self.engine.within_screen_range)
+        self.assertEqual(self.engine.status, NORMAL)
+        self.feed(3.4, 6, yaw=-40, pitch=-45)
+        self.assertEqual(self.engine.status, NORMAL)
+        self.assertEqual(self.engine.matched_position, "writing")
 
-    def test_brief_glance_then_sustained_turn_then_recovery(self):
+    def test_left_right_front_and_elevation_are_relative_to_setup(self):
+        for side, height, reading, writing in [
+            ("front", "level", (0, -15), (0, -40)),
+            ("left", "above", (-35, 10), (-40, -10)),
+            ("right", "above", (35, 10), (40, -10)),
+            ("left", "below", (-35, -35), (-40, -55)),
+            ("right", "below", (35, -35), (40, -55)),
+            ("front", "above", (0, 20), (0, -5)),
+            ("front", "below", (0, -35), (0, -60)),
+        ]:
+            with self.subTest(side=side, height=height):
+                self.engine = RuleEngine()
+                self.engine.set_placement(side, height)
+                self.engine.update_settings(Settings(smoothing_alpha=1))
+                self.engine.study_positions = {
+                    "reading": dict(zip(("yaw", "pitch"), reading)),
+                    "writing": dict(zip(("yaw", "pitch"), writing)),
+                }
+                self.feed(1, 3.2, yaw=reading[0], pitch=reading[1])
+                self.assertEqual(self.engine.status, NORMAL)
+                self.feed(3.4, 6, yaw=writing[0], pitch=writing[1])
+                self.assertEqual(self.engine.status, NORMAL)
+
+    def test_facing_camera_is_not_automatically_studying(self):
+        self.feed(1, 11.2, yaw=0, pitch=0)
+        self.assertEqual(self.engine.status, AWAY)
+        self.assertIsNone(self.engine.matched_position)
+
+    def test_brief_glance_sustained_departure_and_recovery(self):
         self.feed(1, 3.2)
         self.feed(3.4, 5, yaw=40)
-        self.assertEqual(self.engine.status, FACING)
+        self.assertEqual(self.engine.status, NORMAL)
         self.feed(5.2, 6)
-        self.feed(6.2, 11.4, yaw=40)
-        self.assertEqual(self.engine.status, LOOKING_AWAY)
-        self.feed(11.6, 13.8)
-        self.assertEqual(self.engine.status, FACING)
+        self.feed(6.2, 16.4, yaw=40)
+        self.assertEqual(self.engine.status, AWAY)
+        self.feed(16.6, 18.8)
+        self.assertEqual(self.engine.status, NORMAL)
 
-    def test_unknown_resets_candidates(self):
+    def test_unknown_resets_candidates_without_accusing_student(self):
         for count in (0, 2):
-            self.feed(1, 5.8, yaw=45)
-            self.engine.process(sample(6, count=count))
+            self.engine.reset("New check")
+            self.engine.last_identity = None
+            self.engine.last_capture_ms = None
+            self.feed(1, 9.8, yaw=45)
+            self.engine.process(sample(10, count=count))
             self.assertEqual(self.engine.status, UNKNOWN)
             self.assertIsNone(self.engine.candidate_since)
-            self.feed(6.2, 7, yaw=45)
-            self.assertNotEqual(self.engine.status, LOOKING_AWAY)
-            self.engine = RuleEngine()
-            self.engine.update_settings(Settings(smoothing_alpha=1))
+            self.feed(10.2, 11, yaw=45)
+            self.assertNotEqual(self.engine.status, AWAY)
 
     def test_gap_and_restart_cannot_complete_old_timer(self):
-        self.feed(1, 5.8, yaw=45)
-        self.engine.process(sample(10, yaw=45))
+        self.feed(1, 9.8, yaw=45)
+        self.engine.process(sample(20, yaw=45))
         self.assertEqual(self.engine.status, UNKNOWN)
         self.assertEqual(self.engine.elapsed, 0)
-        self.feed(10.2, 14.8, yaw=45)
-        self.engine.process(sample(15, yaw=45, run="new-run"))
+        self.feed(20.2, 29.8, yaw=45)
+        self.engine.process(sample(30, yaw=45, run="new-run"))
         self.assertEqual(self.engine.elapsed, 0)
         self.assertEqual(self.engine.status, UNKNOWN)
 
     def test_duplicates_do_not_advance_timer(self):
         self.engine.process(sample(1, yaw=45))
-        self.assertFalse(self.engine.process(sample(9, yaw=45, seq=10)))
+        self.assertFalse(self.engine.process(sample(19, yaw=45, seq=10)))
         self.assertEqual(self.engine.elapsed, 0)
 
-    def test_settings_and_pause_reset_timers(self):
-        self.feed(1, 5.8, yaw=45)
+    def test_settings_reset_timers(self):
+        self.feed(1, 9.8, yaw=45)
         self.engine.update_settings(Settings(away_seconds=4, smoothing_alpha=1))
         self.assertEqual(self.engine.status, UNKNOWN)
         self.assertIsNone(self.engine.candidate_since)
-        self.engine.process(sample(6, yaw=45))
+        self.engine.process(sample(10, yaw=45))
         self.assertEqual(self.engine.elapsed, 0)
-        self.engine.reset("Paused")
-        self.assertIsNone(self.engine.smoothed)
 
-    def test_optional_calibration_uses_five_seconds_and_median(self):
-        self.engine.begin_calibration()
-        self.feed(1, 6, yaw=4, pitch=2)
-        self.assertEqual(self.engine.settings.center_yaw, 4)
-        self.assertEqual(self.engine.settings.center_pitch, 2)
-        self.assertEqual(self.engine.reference_source, "captured")
+    def test_break_time_is_not_off_task_time(self):
+        self.feed(1, 9.8, yaw=45)
+        self.engine.set_paused(True)
+        self.feed(10, 60, yaw=45)
+        self.assertEqual(self.engine.status, PAUSED)
+        self.assertIsNone(self.engine.snapshot()["is_in_study_position"])
+        self.engine.set_paused(False)
+        self.feed(60.2, 61, yaw=45)
+        self.assertNotEqual(self.engine.status, AWAY)
+        self.assertLess(self.engine.elapsed, 1)
+        self.assertTrue(self.engine.ready)
+
+    def test_setup_is_required_and_one_position_is_not_enough(self):
+        self.engine.clear_positions()
+        self.feed(1, 15)
         self.assertEqual(self.engine.status, UNKNOWN)
-        self.feed(6.2, 8.4, yaw=4, pitch=2)
-        self.assertEqual(self.engine.status, FACING)
+        self.assertFalse(self.engine.ready)
+        self.engine.study_positions["reading"] = {"yaw": -35, "pitch": -20}
+        self.feed(15.2, 18)
+        self.assertFalse(self.engine.ready)
+        self.assertEqual(self.engine.status, UNKNOWN)
+        self.assertIn("writing", self.engine.reason)
+
+    def test_calibrate_reading_and_writing(self):
+        self.engine.clear_positions()
+        self.engine.begin_calibration("reading")
+        self.feed(1, 6)
+        self.assertEqual(self.engine.study_positions["reading"], {"yaw": -35, "pitch": -20})
+        self.assertFalse(self.engine.ready)
+        self.engine.begin_calibration("writing")
+        self.feed(6.2, 11.4, yaw=-40, pitch=-45)
+        self.assertTrue(self.engine.ready)
+        self.feed(11.6, 14)
+        self.assertEqual(self.engine.status, NORMAL)
 
     def test_interrupted_calibration_does_not_save_partial_data(self):
-        self.engine.use_default_reference()
-        self.engine.begin_calibration()
+        self.engine.clear_positions()
+        self.engine.begin_calibration("reading")
         self.feed(1, 4)
         self.engine.process(sample(4.2, count=0))
         self.feed(4.4, 7)
-        self.assertEqual(self.engine.settings.center_yaw, 0)
+        self.assertNotIn("reading", self.engine.study_positions)
         self.assertIsNotNone(self.engine.calibration)
 
+    def test_capture_completes_at_exact_five_seconds_from_fractional_start(self):
+        self.engine.clear_positions()
+        self.engine.begin_calibration("writing")
+        self.feed(6.2, 11.2, yaw=-40, pitch=-45)
+        self.assertIsNone(self.engine.calibration)
+        self.assertEqual(self.engine.study_positions["writing"], {"yaw": -40, "pitch": -45})
+
     def test_unstable_calibration_retries(self):
-        self.engine.use_default_reference()
-        self.engine.begin_calibration()
-        self.feed(1, 3.4, yaw=-15)
-        self.feed(3.6, 6, yaw=15)
-        self.assertEqual(self.engine.settings.center_yaw, 0)
+        self.engine.clear_positions()
+        self.engine.begin_calibration("reading")
+        self.feed(1, 3.4, yaw=-65)
+        self.feed(3.6, 6, yaw=0)
+        self.assertNotIn("reading", self.engine.study_positions)
         self.assertIn("movement", self.engine.calibration_message)
 
-    def test_calibration_not_required(self):
-        self.feed(1, 10)
-        self.assertEqual(self.engine.status, FACING)
-        self.assertTrue(self.engine.snapshot()["is_facing_screen"])
+    def test_recapture_or_cancel_cannot_leave_old_reference_valid(self):
+        self.engine.begin_calibration("reading")
+        self.assertFalse(self.engine.ready)
+        self.engine.cancel_calibration()
+        self.assertNotIn("reading", self.engine.study_positions)
+        self.assertFalse(self.engine.ready)
 
-    def test_saved_profile_round_trip_and_reference_reset(self):
-        self.engine.begin_calibration()
-        self.feed(1, 6, yaw=15, pitch=8)
+    def test_placement_change_invalidates_setup(self):
+        self.engine.set_placement("right", "above")
+        self.assertFalse(self.engine.ready)
+        self.assertFalse(self.engine.study_positions)
+        self.assertEqual(self.engine.status, UNKNOWN)
+        self.assertFalse(self.engine.set_placement("right", "above"))
+        with self.assertRaises(ValueError):
+            self.engine.set_placement("behind", "above")
+
+    def test_profile_thresholds_only_is_default(self):
+        profile = self.engine.export_profile()
+        other = RuleEngine()
+        other.load_profile(json.loads(json.dumps(profile)))
+        self.assertEqual(other.settings, self.engine.settings)
+        self.assertFalse(other.ready)
+        self.assertFalse(other.study_positions)
+
+    def test_same_setup_profile_can_be_explicitly_reused(self):
+        self.engine.placement = {"side": "left", "height": "above"}
         profile = json.loads(json.dumps(self.engine.export_profile()))
         other = RuleEngine()
-        other.load_profile(profile)
-        self.assertEqual(other.settings.center_yaw, 15)
-        self.assertEqual(other.reference_source, "captured")
-        other.use_default_reference()
-        self.assertEqual(other.settings.center_yaw, 0)
-        self.assertEqual(other.reference_source, "default")
+        other.load_profile(profile, reuse_positions=True)
+        self.assertTrue(other.ready)
+        self.assertEqual(other.study_positions, self.engine.study_positions)
+        self.assertEqual(other.placement, self.engine.placement)
+
+    def test_old_phone_facing_profile_never_becomes_study_setup(self):
+        old = {"schema_version": 2, "reference_source": "captured", "settings": {
+            "yaw_tolerance": 22, "pitch_tolerance": 16, "away_seconds": 5,
+            "recovery_seconds": 2, "smoothing_alpha": 0.3, "center_yaw": 0, "center_pitch": 0}}
+        self.engine.load_profile(old, reuse_positions=True)
+        self.assertEqual(self.engine.settings.yaw_tolerance, 22)
+        self.assertFalse(self.engine.ready)
+        self.assertFalse(self.engine.study_positions)
 
     def test_invalid_profiles_do_not_change_settings(self):
         original = self.engine.export_profile()
         for bad in (
             {"schema_version": 1},
-            {**original, "reference_source": "other"},
+            {**original, "placement": {"side": "behind", "height": "level"}},
             {**original, "settings": {"yaw_tolerance": 20}},
             {**original, "settings": {**original["settings"], "yaw_tolerance": float("nan")}},
-            {**original, "settings": {**original["settings"], "center_pitch": True}},
+            {**original, "study_positions": {"reading": {"yaw": True, "pitch": 0}}},
+            {**original, "study_positions": {"screen": {"yaw": 0, "pitch": 0}}},
         ):
             with self.subTest(bad=bad), self.assertRaises((ValueError, TypeError)):
-                self.engine.load_profile(bad)
+                self.engine.load_profile(bad, reuse_positions=True)
             self.assertEqual(self.engine.export_profile(), original)
 
+    def test_break_cancels_capture_and_prevents_calibration(self):
+        self.engine.begin_calibration("reading")
+        self.engine.set_paused(True)
+        self.assertIsNone(self.engine.calibration)
+        with self.assertRaises(ValueError):
+            self.engine.begin_calibration("writing")
+
+    def test_angle_wrap_does_not_create_false_zero_reference(self):
+        from study_monitor.rules import median_angle
+        self.assertGreater(abs(median_angle([179, -179, 178, -178])), 175)
 
 
 class UsbTests(unittest.TestCase):
